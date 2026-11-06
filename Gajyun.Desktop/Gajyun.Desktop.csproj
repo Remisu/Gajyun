@@ -16,6 +16,10 @@
   <ItemGroup>
     <ProjectReference Include="..\Gajyun.Core\Gajyun.Core.csproj" />
     <ProjectReference Include="..\Gajyun.Data\Gajyun.Data.csproj" />
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Resource Include="..\docs\??.png" Link="Assets\Flags\%(Filename)%(Extension)" />
+    <Resource Include="..\docs\gb-*.png" Link="Assets\Flags\%(Filename)%(Extension)" />
+    <Resource Include="..\docs\Agoda-logo.png;..\docs\Booking-Logo.png;..\docs\hostelworld-seeklogo.png;..\docs\VariousLogo.png;..\docs\gajyun-logo.png" Link="Assets\Logos\%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

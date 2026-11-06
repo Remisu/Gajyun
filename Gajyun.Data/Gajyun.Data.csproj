@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Gajyun.Core\Gajyun.Core.csproj" />
+    <EmbeddedResource Include="..\docs\Gajyun_RoomAliases_seed.json" LogicalName="Gajyun.RoomSeed.json" />
+    <EmbeddedResource Include="Metadata\Dictionary.v1.3.json" LogicalName="Gajyun.Dictionary.v1.3.json" />
+    <EmbeddedResource Include="..\docs\??.png" LogicalName="Gajyun.Flags.%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

@@ -1,12 +1,45 @@
 ﻿<Window x:Class="Gajyun.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:Gajyun.Desktop"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        xmlns:vm="clr-namespace:Gajyun.Desktop.ViewModels"
+        xmlns:views="clr-namespace:Gajyun.Desktop.Views"
+        Title="Guesthouse Gajyun" Height="880" Width="1320" MinHeight="700" MinWidth="1080"
+        Background="#FAFBFC" FontFamily="Segoe UI, Yu Gothic UI" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <DataTemplate DataType="{x:Type vm:CsvImportViewModel}"><views:CsvImportView /></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DataDictionaryViewModel}"><views:DataDictionaryView /></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingsViewModel}"><views:SettingsView /></DataTemplate>
+        <Style TargetType="Button"><Setter Property="Cursor" Value="Hand" /></Style>
+        <Style TargetType="DataGrid"><Setter Property="GridLinesVisibility" Value="Horizontal" /><Setter Property="RowHeaderWidth" Value="0" /><Setter Property="AlternatingRowBackground" Value="#F2F5F7" /></Style>
+    </Window.Resources>
     <Grid>
-
+        <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="190" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+        <Border Grid.RowSpan="2" Background="#234B40" Padding="14,28,14,20">
+            <StackPanel>
+                <TextBlock Text="Guesthouse" Foreground="#D5E4DD" FontSize="16" />
+                <TextBlock Text="Gajyun" Foreground="White" FontSize="30" FontWeight="SemiBold" Margin="0,0,0,28" />
+                <ListBox ItemsSource="{Binding NavigationItems}" SelectedItem="{Binding SelectedNavigation}" DisplayMemberPath="Title"
+                         BorderThickness="0" Background="Transparent" Foreground="White" FontSize="16" AutomationProperties.Name="Navigation">
+                    <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="Padding" Value="10,12" /><Setter Property="Margin" Value="0,3" /><Setter Property="AutomationProperties.Name" Value="{Binding Title}" /></Style></ListBox.ItemContainerStyle>
+                </ListBox>
+                <TextBlock Text="Local Windows application&#10;Schema v1.3" Foreground="#D5E4DD" Margin="8,28,0,0" />
+            </StackPanel>
+        </Border>
+        <ContentControl Grid.Column="1" Content="{Binding SelectedNavigation.Page}" />
+        <Border Grid.Row="1" Grid.Column="1" Background="#EAF0EC" Padding="16,12">
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="{Binding ServerStatus, StringFormat=SQL Server: {0}}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding DatabaseStatus}" TextWrapping="Wrap" Margin="0,3,12,0" />
+                    <ProgressBar Height="4" Margin="0,6,12,0" IsIndeterminate="{Binding IsInitializing}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="Initialize / retry" Command="{Binding InitializeCommand}" Padding="12,6" Margin="0,0,8,0" />
+                    <Button Content="Cancel" Command="{Binding InitializeCancelCommand}" Padding="12,6" />
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>

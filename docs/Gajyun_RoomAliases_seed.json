@@ -1,0 +1,87 @@
+{
+    "rooms": [
+        {
+            "name": "順(Jyun)",
+            "capacity": 4,
+            "roomType": "MixedDormitory",
+            "aliases": [
+                "順【ミックスドミトリー4bed】",
+                "ドミトリールーム（4人部屋）　男女共用　ベッド1名分",
+                "Basic 4 Beds Mixed Dormitory",
+                "男女混合ドミトリールーム（相部屋・4ベッド）",
+                "Shared Dormitory, Mixed Dorm, Shared Bathroom",
+                "ドミトリールーム　男女共用　ベッド計4台のベッド1台"
+            ],
+            "beds": [
+                "マド上",
+                "マド下",
+                "ドア上",
+                "ドア下"
+            ]
+        },
+        {
+            "name": "翔(Show)",
+            "capacity": 2,
+            "roomType": "PrivateTwin",
+            "aliases": [
+                "ツインルーム　共用バスルーム　",
+                "翔【ツイン 個室】",
+                "xxx Twin Room",
+                "ツインルーム（共同バスルーム）"
+            ],
+            "beds": []
+        },
+        {
+            "name": "智(Tomo)",
+            "capacity": 4,
+            "roomType": "FemaleDormitory",
+            "aliases": [
+                "Female Dormitory, Shared Bathroom",
+                "ドミトリールーム　女性用　ベッド計4台の1台",
+                "ドミトリールーム　女性用　二段ベッド1名分",
+                "女性ドミトリールーム（相部屋/４ベッド）",
+                "Basic 4 Beds Female Dormitory",
+                "智【女性ドミトリー 4bed】"
+            ],
+            "beds": [
+                "マド上",
+                "マド下",
+                "ドア上",
+                "ドア下"
+            ]
+        },
+        {
+            "name": "杏(Anne)",
+            "capacity": 2,
+            "roomType": "PrivateLoft",
+            "aliases": [
+                "個室（ロフトスタイル）最大定員2名様",
+                "Economy Loft, Japanese Futon",
+                "ロフト ダブルルーム",
+                "スタンダード　ダブルルーム",
+                "杏【ロフト・個室】"
+            ],
+            "beds": []
+        },
+        {
+            "name": "雅(Miyabi)",
+            "capacity": 6,
+            "roomType": "MixedDormitory",
+            "aliases": [
+                "雅【ミックスドミトリー6beds】",
+                "男女混合ドミトリールーム（相部屋・６ベッド）",
+                "Basic 6 Beds Mixed Dormitory",
+                "ドミトリールーム（6人部屋）　男女共用　二段ベッド1名分",
+                "Miyabi [dormit?rio misto com 6 camas]"
+            ],
+            "beds": [
+                "マド上",
+                "マド下",
+                "ドア上",
+                "ドア下",
+                "中上",
+                "中下"
+            ]
+        }
+    ]
+}
