@@ -43,7 +43,6 @@ public sealed class ReservationImportService(
             var mappings = await LoadMappingsAsync(db, cancellationToken);
             var otas = await db.OTAs.AsNoTracking().ToDictionaryAsync(x => x.OTAName, cancellationToken);
             var rooms = await db.Rooms.AsNoTracking().Where(x => x.IsActive).OrderBy(x => x.RoomID).ToArrayAsync(cancellationToken);
-            var customers = await db.Customers.AsNoTracking().ToArrayAsync(cancellationToken);
             var rows = new List<PreparedRow>();
             var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var record in file.Content.Records)
@@ -60,7 +59,7 @@ public sealed class ReservationImportService(
                 var row = new PreparedRow(checked((int)record.RecordNumber), otaName, rawPayload, fingerprint, fields["詳細"], parsed.Reservation,
                     null, ImportRowDisposition.Held, parsed.Message)
                 {
-                    SourceNumber = fields["予約番号"].Trim(), SourceGuestName = fields["宿泊者氏名"].Trim(),
+                    SourceNumber = fields["予約番号"].Trim(), SourceGuestName = fields["宿泊者氏名"].Trim(), SourceFields = fields,
                     SourceBookedAt = DateTime.TryParseExact(fields["予約日時"].Trim(), "yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture,
                         System.Globalization.DateTimeStyles.None, out var booked) ? booked : null
                 };
@@ -89,23 +88,16 @@ public sealed class ReservationImportService(
             foreach (var row in rows)
             {
                 var source = row.Reservation;
-                var candidates = new List<CustomerMatchOption> { new(null, null, "Different person / create customer") };
-                if (source is not null && row.ExistingID is null)
-                {
-                    var name = RoomNameNormalizer.Normalize(source.GuestName);
-                    candidates.AddRange(customers.Where(x => RoomNameNormalizer.Normalize(x.FullName) == name)
-                        .Select(x => new CustomerMatchOption(x.CustomerID, null, $"Same person: {x.FullName} (customer {x.CustomerID})")));
-                    candidates.AddRange(reviewRows.Where(x => x.GuestName.Length > 0 && RoomNameNormalizer.Normalize(x.GuestName) == name &&
-                            x.Disposition is ImportRowDisposition.Ready or ImportRowDisposition.Cancelled)
-                        .Select(x => new CustomerMatchOption(null, x.RowNumber, $"Same person as booking {x.ReservationNumber} ({x.OTAName}, {x.CheckIn:yyyy-MM-dd})")));
-                }
                 var options = row.NeedsRoomChoice ? rooms.Select(x => new ImportRoomOption(x.RoomID, x.RoomName)).ToArray() : [];
+                var comparison = row.NeedsRoomChoice || row.Disposition is ImportRowDisposition.Held or ImportRowDisposition.Invalid or ImportRowDisposition.Changed or ImportRowDisposition.CancellationUpdate
+                    ? await BuildComparisonAsync(db, row, otas.GetValueOrDefault(row.OTAName)?.OTAID, cancellationToken)
+                    : (HasExisting: row.ExistingID is not null, Fields: (IReadOnlyList<ReservationComparisonField>)Array.Empty<ReservationComparisonField>());
                 reviewRows.Add(new ImportReviewRow(row.Number, row.OTAName, row.Disposition, row.Message,
                     source?.Nights.Count ?? 0, source?.Nights.Sum(x => x.RoomPrice) ?? 0)
                 {
                     ReservationNumber = source?.ExternalNumber ?? row.SourceNumber, GuestName = source?.GuestName ?? row.SourceGuestName, BookedAt = source?.BookedAt ?? row.SourceBookedAt,
                     CheckIn = source?.CheckIn, CheckOut = source?.CheckOut, RoomName = rooms.FirstOrDefault(x => x.RoomID == row.RoomID)?.RoomName ?? source?.RoomMaster ?? "",
-                    CustomerMatches = candidates.AsReadOnly(), RoomChoices = options
+                    HasExistingReservation = comparison.HasExisting, ComparisonFields = comparison.Fields, RoomChoices = options
                 });
             }
             var id = Guid.NewGuid();
@@ -160,7 +152,9 @@ public sealed class ReservationImportService(
                 .Select(x => new { x.OTAName, Name = RoomNameNormalizer.Normalize(x.Reservation!.ExternalRoomName), RoomID = choices.GetValueOrDefault(x.Number)?.RoomID ?? x.RoomID });
             if (resolvedRooms.GroupBy(x => new { x.OTAName, x.Name }).Any(x => x.Where(y => y.RoomID is not null).Select(y => y.RoomID).Distinct().Count() > 1))
                 throw new ReservationImportException("The same OTA room name has conflicting physical-room choices. Choose one consistent mapping before importing.");
-            var customersByRow = new Dictionary<int, long>();
+            var customers = await db.Customers.AsNoTracking().Select(x => new { x.CustomerID, x.FullName }).ToArrayAsync(cancellationToken);
+            var customersByName = customers.OrderBy(x => x.CustomerID).GroupBy(x => RoomNameNormalizer.Normalize(x.FullName), StringComparer.Ordinal)
+                .ToDictionary(x => x.Key, x => x.First().CustomerID, StringComparer.Ordinal);
             var methodIDs = await db.PaymentMethods.ToDictionaryAsync(x => x.MethodName, x => x.PaymentMethodID, cancellationToken);
             var created = 0;
             var updated = 0;
@@ -229,9 +223,8 @@ public sealed class ReservationImportService(
                             GroupID = groups.GetValueOrDefault(GroupKey(source, ota.OTAID) ?? "")
                         };
                         db.Reservations.Add(reservation);
-                        var customerID = await ResolveCustomerAsync(db, source, choice, reviewRow.CustomerMatches, customersByRow, cancellationToken);
+                        var customerID = await ResolveCustomerAsync(db, source, customersByName, cancellationToken);
                         await db.SaveChangesAsync(cancellationToken);
-                        customersByRow[row.Number] = customerID;
                         reservationID = reservation.ReservationID;
                         db.ReservationCustomers.Add(new ReservationCustomer { ReservationID = reservation.ReservationID, CustomerID = customerID, IsLeadGuest = true });
                         if (!source.IsCancelled) await LinkStayAsync(db, reservation, customerID, cancellationToken);
@@ -305,7 +298,7 @@ public sealed class ReservationImportService(
                         ParseStatus = row.Disposition is ImportRowDisposition.Ready or ImportRowDisposition.Cancelled or ImportRowDisposition.Changed or ImportRowDisposition.CancellationUpdate ? "Processed"
                             : row.Disposition == ImportRowDisposition.Invalid ? "Failed" : "Skipped",
                         ParseError = (row.Message.Length <= 1700 ? row.Message : row.Message[..1700] + " [Summary shortened; compare audited source versions for remaining differences.]") +
-                            (choice?.CustomerID is not null || choice?.ReuseCustomerFromRow is not null ? " Customer reuse explicitly confirmed." : "") +
+                            (row.Disposition is ImportRowDisposition.Ready or ImportRowDisposition.Cancelled ? " Customer resolved by normalized name under the staff-approved same-name rule." : "") +
                             (choice?.RoomID is not null ? $" Physical room {choice.RoomID} explicitly confirmed." : "")
                     });
                     await db.SaveChangesAsync(cancellationToken);
@@ -329,6 +322,58 @@ public sealed class ReservationImportService(
             throw new ReservationImportException("The import violated a database constraint. The transaction was rolled back. Refresh and validate before retrying.");
         }
         finally { operationLock.Release(); }
+    }
+
+    private static async Task<(bool HasExisting, IReadOnlyList<ReservationComparisonField> Fields)> BuildComparisonAsync(
+        GajyunDbContext db, PreparedRow row, int? otaID, CancellationToken ct)
+    {
+        var source = row.Reservation;
+        var existing = otaID is null || row.SourceNumber.Length == 0 ? null :
+            await db.Reservations.AsNoTracking().SingleOrDefaultAsync(x => x.OTAID == otaID && x.ExternalReservationNumber == row.SourceNumber, ct);
+        var fields = new List<ReservationComparisonField>();
+        string Raw(string header) => row.SourceFields.GetValueOrDefault(header) ?? "";
+        static string Display(object? value) => value switch
+        {
+            null => "(not supplied)",
+            string text when string.IsNullOrWhiteSpace(text) => "(not supplied)",
+            DateOnly date => date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            DateTime time => time.ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture),
+            decimal money => money.ToString("N2", System.Globalization.CultureInfo.InvariantCulture),
+            IFormattable number => number.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            _ => value.ToString()!
+        };
+        void Add(string label, object? current, object? incoming) => fields.Add(new(label, existing is null ? "(no booking)" : Display(current), Display(incoming)));
+        var guest = existing is null ? null : await (from link in db.ReservationCustomers join customer in db.Customers on link.CustomerID equals customer.CustomerID
+            where link.ReservationID == existing.ReservationID && link.IsLeadGuest select customer.FullName).SingleOrDefaultAsync(ct);
+        var assignedRooms = existing is null ? [] : await (from assignment in db.ReservationAccommodations join room in db.Rooms on assignment.RoomID equals room.RoomID
+            where assignment.ReservationID == existing.ReservationID select room.RoomName).Distinct().ToArrayAsync(ct);
+        var currentStatus = existing is null ? null : await db.BookingStatuses.Where(x => x.BookingStatusID == existing.BookingStatusID).Select(x => x.StatusName).SingleAsync(ct);
+        var method = existing?.SourcePaymentMethodID is not int methodID ? null : await db.PaymentMethods.Where(x => x.PaymentMethodID == methodID).Select(x => x.MethodName).SingleAsync(ct);
+        var nightlyCharges = existing is null ? [] : await db.ReservationCharges.AsNoTracking()
+            .Where(x => x.ReservationID == existing.ReservationID && x.ChargeType == "Accommodation").OrderBy(x => x.ServiceDate).ToArrayAsync(ct);
+        var incomingRoom = row.RoomID is not int roomID ? "Unresolved" : await db.Rooms.Where(x => x.RoomID == roomID).Select(x => x.RoomName).SingleAsync(ct);
+        Add("Booking", existing?.ExternalReservationNumber, row.SourceNumber);
+        Add("OTA", row.OTAName, row.OTAName);
+        Add("Guest", guest, row.SourceGuestName);
+        Add("Booked", existing?.BookedAt, source is null ? Raw("予約日時") : source.BookedAt);
+        Add("Arrival", existing?.CheckInDate, source is null ? Raw("チェックイン日") : source.CheckIn);
+        Add("Departure", existing?.CheckOutDate, source is null ? Raw("チェックアウト日") : source.CheckOut);
+        Add("Guests", existing?.ExpectedGuestCount, source is null ? $"Adults: {Raw("大人人数")}; children: {Raw("子供人数")}" : source.GuestCount);
+        Add("Status", currentStatus, source is null ? Raw("予約区分") : source.IsCancelled ? "Cancelled" : "Confirmed");
+        Add("Physical room", string.Join(", ", assignedRooms), incomingRoom);
+        Add("CSV room name", null, Raw("部屋名称"));
+        Add("CSV room master", null, Raw("部屋マスタ"));
+        Add("Payment method", method, source?.SourcePaymentMethod);
+        Add("Accommodation JPY", nightlyCharges.Sum(x => x.Amount), source is null || source.IsCancelled
+            ? $"Source total (unverified): {Display(Raw("合計料金"))}" : source.Nights.Sum(x => x.RoomPrice));
+        foreach (var date in nightlyCharges.Where(x => x.ServiceDate is not null).Select(x => x.ServiceDate!.Value)
+            .Union(source?.Nights.Select(x => x.ServiceDate) ?? []).Order())
+        {
+            var current = nightlyCharges.Where(x => x.ServiceDate == date).ToArray();
+            var incoming = source?.Nights.Where(x => x.ServiceDate == date).ToArray();
+            Add($"Night {date:yyyy-MM-dd} JPY", current.Length == 0 ? null : current.Sum(x => x.Amount), incoming is null || incoming.Length == 0 ? null : incoming.Sum(x => x.RoomPrice));
+        }
+        return (existing is not null, fields.AsReadOnly());
     }
 
     private async Task<PreparedRow> ClassifyExistingAsync(GajyunDbContext db, PreparedRow row, int otaID, CancellationToken cancellationToken)
@@ -397,7 +442,7 @@ public sealed class ReservationImportService(
 
     private static async Task<string?> UnsafeUpdateReasonAsync(GajyunDbContext db, Reservation existing, ParsedReservation previous, ParsedReservation source, int? previousRoomID, CancellationToken ct)
     {
-        if (previous.GuestName != source.GuestName) return "Guest identity changed; staff reconciliation is required.";
+        if (RoomNameNormalizer.Normalize(previous.GuestName) != RoomNameNormalizer.Normalize(source.GuestName)) return "Guest identity changed; staff reconciliation is required.";
         var previousStatusID = await db.BookingStatuses.Where(x => x.StatusName == (previous.IsCancelled ? "Cancelled" : "Confirmed")).Select(x => x.BookingStatusID).SingleAsync(ct);
         if (existing.BookingStatusID != previousStatusID || existing.BookingDetails != previous.Details || existing.RoomRateInfo != previous.RoomRateInfo ||
             existing.ConsecutiveStayInfo != previous.ConsecutiveInfo || existing.IsModified != previous.IsModified || existing.ModifiedAtSource != previous.ModifiedAtSource)
@@ -456,28 +501,17 @@ public sealed class ReservationImportService(
             ? new(RoomMatchStatus.Matched, master.RoomID, "Matched the export's room master to a known physical room alias.") : external;
     }
 
-    private static async Task<long> ResolveCustomerAsync(GajyunDbContext db, ParsedReservation source, ImportRowDecision? choice,
-        IReadOnlyList<CustomerMatchOption> allowed, IReadOnlyDictionary<int, long> customersByRow, CancellationToken ct)
+    private static async Task<long> ResolveCustomerAsync(GajyunDbContext db, ParsedReservation source,
+        IDictionary<string, long> customersByName, CancellationToken ct)
     {
-        if (allowed.Count > 1 && choice?.CustomerIdentityConfirmed != true)
-            throw new ReservationImportException("A same-name customer exists. Confirm whether this is the same person or a different customer before importing.");
-        if (choice?.CustomerID is not null && choice.ReuseCustomerFromRow is not null) throw new ReservationImportException("Choose only one customer identity.");
-        if (choice?.CustomerID is long id)
-        {
-            if (!allowed.Any(x => x.CustomerID == id)) throw new ReservationImportException("The customer selection was not offered in this review.");
-            var customer = await db.Customers.SingleOrDefaultAsync(x => x.CustomerID == id, ct);
-            if (customer is null || RoomNameNormalizer.Normalize(customer.FullName) != RoomNameNormalizer.Normalize(source.GuestName))
-                throw new ReservationImportException("Customer identity changed since review. Review again.");
-            return id;
-        }
-        if (choice?.ReuseCustomerFromRow is int number)
-        {
-            if (!allowed.Any(x => x.SourceRowNumber == number) || !customersByRow.TryGetValue(number, out var earlierCustomer))
-                throw new ReservationImportException("The chosen earlier booking was not imported. Choose a different customer identity.");
-            return earlierCustomer;
-        }
+        var name = RoomNameNormalizer.Normalize(source.GuestName);
+        if (name.Length == 0) throw new ReservationImportException("A guest name is required to resolve the customer; no data was saved.");
+        if (customersByName.TryGetValue(name, out var customerID)) return customerID;
         var created = new Customer { FullName = source.GuestName };
-        db.Customers.Add(created); await db.SaveChangesAsync(ct); return created.CustomerID;
+        db.Customers.Add(created);
+        await db.SaveChangesAsync(ct);
+        customersByName.Add(name, created.CustomerID);
+        return created.CustomerID;
     }
 
     private static async Task SaveSourceMappingAsync(GajyunDbContext db, int otaID, string externalName, int roomID, bool explicitlyChosen, CancellationToken ct)
@@ -643,6 +677,7 @@ public sealed class ReservationImportService(
         public string SourceNumber { get; init; } = "";
         public string SourceGuestName { get; init; } = "";
         public DateTime? SourceBookedAt { get; init; }
+        public IReadOnlyDictionary<string, string> SourceFields { get; init; } = new Dictionary<string, string>();
     }
     private sealed record PreparedImport(Guid ID, CsvImportFile File, IReadOnlyList<PreparedRow> Rows, IReadOnlyList<ImportReviewRow> ReviewRows);
 }

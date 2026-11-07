@@ -47,8 +47,8 @@
       "fields": { "GroupID": "Internal reservation-group identifier.", "ExternalGroupReference": "Optional reference; automatic groups use OTA ID and booking prefix.", "LogoUrl": "Optional bundled combined-OTA logo for grouped bookings; never replaces each reservation's actual OTA.", "Notes": "Staff notes about the group." }
     },
     "Customer": {
-      "purpose": "Reliably identified guests. Matching names alone is not sufficient to merge identities or link stays.", "version": "1.0",
-      "fields": { "CustomerID": "Internal guest identity.", "FullName": "Guest's full name; not a unique identifier.", "Nickname": "Optional preferred name.", "CountryID": "Optional country or nationality reference.", "PostalAddress": "Optional postal address.", "PhoneNumber": "Optional contact telephone, stored as text.", "Email": "Optional contact email; not automatically a verified identity.", "IsRegularCustomer": "Staff designation of a returning guest.", "CreatedAt": "Local Japanese wall-clock time when this record was created." }
+      "purpose": "Guest identities. Under the staff-approved rule of 2026-11-07, equal normalized full names automatically reuse the same customer across files and OTAs. Existing records and staff data are not merged or overwritten.", "version": "1.0",
+      "fields": { "CustomerID": "Internal guest identity.", "FullName": "Original guest name. Imports match by Unicode Form KC, collapsed whitespace and invariant uppercase; different names remain separate. If older duplicate records exist, new bookings reuse the lowest CustomerID without changing old links.", "Nickname": "Optional preferred name.", "CountryID": "Optional country or nationality reference.", "PostalAddress": "Optional postal address.", "PhoneNumber": "Optional contact telephone, stored as text.", "Email": "Optional contact email; not automatically a verified identity.", "IsRegularCustomer": "Staff designation of a returning guest.", "CreatedAt": "Local Japanese wall-clock time when this record was created." }
     },
     "Reservation": {
       "purpose": "Original OTA booking and operational record. Never merge its identity, dates, payments or import history with another booking.", "version": "1.0",
@@ -83,7 +83,7 @@
       "fields": { "PaymentID": "Actual money movement being allocated.", "ChargeID": "Billable line receiving the allocation.", "AllocatedAmount": "Positive portion allocated; application validation must prevent over-allocation." }
     },
     "StayMemo": {
-      "purpose": "Staff notes attached to a continuous visit rather than a single OTA reservation. Imports preserve notes when confirmed customer stays are linked.", "version": "1.3",
+      "purpose": "Staff notes attached to a continuous visit rather than a single OTA reservation. Imports preserve notes when adjacent stays for the same customer are linked.", "version": "1.3",
       "fields": { "MemoID": "Internal staff-note identifier.", "StayID": "Operational visit to which the note belongs.", "MemoText": "Full staff-authored note.", "CreatedAt": "Local timestamp when the note was created." }
     },
     "CustomerDocument": {
@@ -114,12 +114,12 @@
       "examples": { "CalculationStatus": "PendingReview" }
     },
     "Stay": {
-      "purpose": "Operationally continuous visit by one reliably identified customer. Staff-confirmed associations can span multiple OTAs without merging reservations.", "version": "1.1",
-      "fields": { "StayID": "Internal continuous-visit identifier.", "CustomerID": "Reliably identified guest whose visit this represents; never infer from a name alone.", "StartDate": "First arrival date of the operational visit.", "EndDate": "Final departure date, exclusive for occupied nights.", "Notes": "Staff explanation of the link between original bookings.", "CreatedAt": "Local timestamp when the operational stay was recorded." }
+      "purpose": "Operationally continuous visit by one customer. Adjacent dates and the same customer, including automatic normalized-name matches, can link stays across OTAs without merging reservations. Nonconsecutive visits remain separate; cancelled booking links exclude automatic adjacency.", "version": "1.1",
+      "fields": { "StayID": "Internal continuous-visit identifier.", "CustomerID": "Guest whose visit this represents; matching normalized full names reuse this identity under the current staff-approved import rule.", "StartDate": "First arrival date of the operational visit.", "EndDate": "Final departure date, exclusive for occupied nights.", "Notes": "Staff explanation of the link between original bookings.", "CreatedAt": "Local timestamp when the operational stay was recorded." }
     },
     "StayReservation": {
       "purpose": "Associates separate original bookings with a customer's continuous stay. One family reservation may participate in different guests' stays.", "version": "1.1",
-      "fields": { "StayID": "Operational continuous visit.", "ReservationID": "Original booking; its OTA identifiers, finances and history remain separate.", "AddedAt": "Local timestamp when staff confirmed this association." }
+      "fields": { "StayID": "Operational continuous visit.", "ReservationID": "Original booking; its OTA identifiers, finances and history remain separate.", "AddedAt": "Local timestamp when the association was created by staff or an approved import." }
     },
     "OTARoomMapping": {
       "purpose": "Known OTA-specific room names, then unique generic aliases. Approved imports save OTA attribution; conflicts require a staff room choice. Room codes remain only in raw CSV audit.", "version": "1.1",

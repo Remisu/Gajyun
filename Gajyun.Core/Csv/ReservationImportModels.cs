@@ -27,9 +27,12 @@ public sealed record ReservationParseResult(ParsedReservation? Reservation, stri
 }
 
 public enum ImportRowDisposition { Ready, Cancelled, Duplicate, Held, Invalid, Changed, CancellationUpdate }
-public sealed record CustomerMatchOption(long? CustomerID, int? SourceRowNumber, string Label);
 public sealed record ImportRoomOption(int RoomID, string RoomName);
-public sealed record ImportRowDecision(int RowNumber, long? CustomerID = null, int? ReuseCustomerFromRow = null, int? RoomID = null, bool CustomerIdentityConfirmed = false);
+public sealed record ImportRowDecision(int RowNumber, int? RoomID = null);
+public sealed record ReservationComparisonField(string Label, string ExistingValue, string IncomingValue)
+{
+    public bool IsDifferent => ExistingValue != IncomingValue;
+}
 public sealed record ImportReviewRow(int RowNumber, string OTAName, ImportRowDisposition Disposition,
     string Message, int NightCount, decimal AccommodationTotal)
 {
@@ -39,7 +42,8 @@ public sealed record ImportReviewRow(int RowNumber, string OTAName, ImportRowDis
     public DateOnly? CheckIn { get; init; }
     public DateOnly? CheckOut { get; init; }
     public string RoomName { get; init; } = "";
-    public IReadOnlyList<CustomerMatchOption> CustomerMatches { get; init; } = [];
+    public bool HasExistingReservation { get; init; }
+    public IReadOnlyList<ReservationComparisonField> ComparisonFields { get; init; } = [];
     public IReadOnlyList<ImportRoomOption> RoomChoices { get; init; } = [];
 }
 public sealed record ReservationImportReview(Guid ReviewID, int TotalRows, int ReadyRows, int CancelledRows,

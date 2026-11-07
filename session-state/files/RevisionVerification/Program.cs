@@ -1,6 +1,8 @@
 using System.IO;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using Gajyun.Core.Csv;
 using Gajyun.Core.Dictionary;
 using Gajyun.Core.Models;
@@ -52,7 +54,6 @@ async Task<string> Fixture(string name, params Dictionary<string, string>[] reco
     var text = string.Join(',', headers.Select(Quote)) + "\r\n" + string.Join("\r\n", records.Select(r => string.Join(',', headers.Select(h => Quote(r.GetValueOrDefault(h, "")))))) + "\r\n";
     var path = Path.Combine(directory, name + ".csv"); await File.WriteAllTextAsync(path, text, new UTF8Encoding(true, true)); fixtureFiles.Add(path); return path;
 }
-ImportRowDecision[] DifferentPeople(ReservationImportReview review) => review.Rows.Select(r => new ImportRowDecision(r.RowNumber, CustomerIdentityConfirmed: true)).ToArray();
 try
 {
     await using var provider = new ServiceCollection().AddLogging().AddGajyunData(server + "Database=" + database + ";").BuildServiceProvider();
@@ -87,14 +88,15 @@ try
     var sample = await importer.PrepareAsync(samplePath, CsvFileEncoding.Auto, ',');
     Check(sample.ReadyRows == 257 && sample.CancelledRows == 74 && sample.HeldRows == 9 && sample.TotalRows == 340, "real sample retains exact 257 active, 74 cancelled, nine held outcomes");
     Check(sample.Rows.Where(x => x.BookedAt != null).Select(x => x.BookedAt).SequenceEqual(sample.Rows.Where(x => x.BookedAt != null).Select(x => x.BookedAt).Order()), "review is globally sorted by booking time, not OTA");
-    Check(sample.Rows.Any(x => x.CustomerMatches.Count > 1), "repeated names produce explicit identity questions");
-    await Reject(() => importer.ImportAsync(sample.ReviewID), "service refuses same-name customer reuse or creation without explicit identity confirmation");
-    Check(await db.Reservations.CountAsync() == 0 && await db.ImportBatches.CountAsync() == 0, "missing identity confirmation rolls back entire import");
-    var result = await importer.ImportAsync(sample.ReviewID, DifferentPeople(sample));
-    Check(result.CreatedReservations == 331 && await db.Reservations.CountAsync() == 331, "approved real sample inserts exactly 331 eligible reservations");
+    Check(await db.Reservations.CountAsync() == 0 && await db.Customers.CountAsync() == 0, "review and comparison never persist guest data");
+    Check(sample.Rows.Where(x => x.Disposition == ImportRowDisposition.Held).All(x => x.ComparisonFields.Count > 0 && !x.HasExistingReservation), "held new bookings show incoming source context without inventing an existing reservation");
+    var result = await importer.ImportAsync(sample.ReviewID);
+    Check(result.CreatedReservations == 331 && await db.Reservations.CountAsync() == 331, "approved real sample inserts exactly 331 eligible reservations without customer confirmation");
+    var expectedCustomers = sample.Rows.Where(x => x.Disposition is ImportRowDisposition.Ready or ImportRowDisposition.Cancelled).Select(x => RoomNameNormalizer.Normalize(x.GuestName)).Distinct().Count();
+    Check(await db.Customers.CountAsync() == expectedCustomers && expectedCustomers < 331, "real sample creates exactly one customer for each normalized eligible guest name");
     var bookedTimes = await db.Reservations.OrderBy(x => x.ReservationID).Select(x => x.BookedAt).ToArrayAsync();
     Check(bookedTimes.SequenceEqual(bookedTimes.Order()), "reservation identity insertion order follows BookedAt across all OTAs");
-    Check(await db.Stays.CountAsync() == 257 && await db.StayReservations.CountAsync() == 257, "each active booking initializes its separate operational stay");
+    Check(await db.StayReservations.CountAsync() == 257 && await db.Stays.CountAsync() <= 257, "all active bookings link to operational stays under the automatic-name rule");
     Check(await db.ReservationGroups.CountAsync() == 9 && await db.Reservations.AnyAsync(x => x.GroupID != null) && await db.ReservationGroups.AllAsync(x => x.LogoUrl!.Contains("VariousLogo.png")), "nine observed Booking.com prefix groups receive the bundled combined logo");
     Check(await db.OTARoomMappings.AnyAsync(x => x.OTAID != null) && await db.OTARoomMappings.CountAsync(x => x.OTAID == null) == 31, "approved source names learn OTA attribution without altering generic aliases");
     Check(await db.Reservations.AnyAsync(x => x.SourcePaymentMethodID == 5) && !await db.ReservationPayments.AnyAsync(), "Internet payment designation stored without inventing money received");
@@ -107,29 +109,29 @@ try
         Fields("SAME-2", "Synthetic Shared Guest", ota: "Hostelworld", booked: "2026-10-01 09:00:00", arrival: "2026-10-21", departure: "2026-10-22"));
     var adjacentReview = await importer.PrepareAsync(adjacentFile, CsvFileEncoding.Auto, ',');
     var first = adjacentReview.Rows[0]; var second = adjacentReview.Rows[1];
-    Check(second.CustomerMatches.Any(x => x.SourceRowNumber == first.RowNumber), "same-name adjacent bookings offer the earlier guest identity for confirmation");
-    await importer.ImportAsync(adjacentReview.ReviewID, [new(first.RowNumber, CustomerIdentityConfirmed: true), new(second.RowNumber, ReuseCustomerFromRow: first.RowNumber, CustomerIdentityConfirmed: true)]);
+    await importer.ImportAsync(adjacentReview.ReviewID);
     var pairIDs = await db.Reservations.Where(x => x.ExternalReservationNumber == "SAME-1" || x.ExternalReservationNumber == "SAME-2").Select(x => x.ReservationID).ToArrayAsync();
     var pairCustomers = await db.ReservationCustomers.Where(x => pairIDs.Contains(x.ReservationID)).Select(x => x.CustomerID).ToArrayAsync();
     var pairStays = await db.StayReservations.Where(x => pairIDs.Contains(x.ReservationID)).Select(x => x.StayID).ToArrayAsync();
-    Check(pairCustomers.Distinct().Count() == 1 && pairStays.Distinct().Count() == 1 && (await db.Stays.FindAsync(pairStays[0]))!.EndDate == new DateOnly(2026, 10, 22), "staff-confirmed customer links continuous bookings across OTAs without merging reservations");
+    Check(pairCustomers.Distinct().Count() == 1 && pairStays.Distinct().Count() == 1 && (await db.Stays.FindAsync(pairStays[0]))!.EndDate == new DateOnly(2026, 10, 22), "same-name customer links continuous bookings across OTAs without merging reservations");
     Check(!await db.Reservations.AnyAsync(x => pairIDs.Contains(x.ReservationID) && x.GroupID != null), "same booking prefix on different OTAs never becomes one automatic group");
     db.StayMemos.Add(new StayMemo { StayID = pairStays[0], MemoText = "Synthetic stay note" }); await db.SaveChangesAsync();
-    var distantFile = await Fixture("distant", Fields("DISTANT-1", "Synthetic Shared Guest", arrival: "2026-12-01", departure: "2026-12-02"));
+    var distantFile = await Fixture("distant", Fields("DISTANT-1", "  synthetic　shared   guest  ", arrival: "2026-12-01", departure: "2026-12-02"));
     var distantReview = await importer.PrepareAsync(distantFile, CsvFileEncoding.Auto, ',');
-    await importer.ImportAsync(distantReview.ReviewID, [new(distantReview.Rows[0].RowNumber, CustomerID: pairCustomers[0], CustomerIdentityConfirmed: true)]);
-    Check(await db.Stays.CountAsync(x => x.CustomerID == pairCustomers[0]) == 2, "same confirmed customer on nonconsecutive dates gets a separate stay");
+    await importer.ImportAsync(distantReview.ReviewID);
+    var distantCustomerID = await db.ReservationCustomers.Where(x => x.ReservationID == db.Reservations.Where(r => r.ExternalReservationNumber == "DISTANT-1").Select(r => r.ReservationID).Single()).Select(x => x.CustomerID).SingleAsync();
+    Check(distantCustomerID == pairCustomers[0] && await db.Stays.CountAsync(x => x.CustomerID == pairCustomers[0]) == 2 && (await db.Customers.FindAsync(pairCustomers[0]))!.FullName == "Synthetic Shared Guest", "normalized names reuse existing customers across files without overwriting their original name; nonconsecutive stays remain separate");
     var bridgeEnds = await Fixture("bridge-ends", Fields("BRIDGE-1", "Synthetic Bridge Guest", arrival: "2027-01-01", departure: "2027-01-02"),
         Fields("BRIDGE-3", "Synthetic Bridge Guest", booked: "2026-10-01 11:00:00", arrival: "2027-01-03", departure: "2027-01-04"));
     var bridgeReview = await importer.PrepareAsync(bridgeEnds, CsvFileEncoding.Auto, ',');
-    await importer.ImportAsync(bridgeReview.ReviewID, [new(bridgeReview.Rows[0].RowNumber, CustomerIdentityConfirmed: true), new(bridgeReview.Rows[1].RowNumber, ReuseCustomerFromRow: bridgeReview.Rows[0].RowNumber, CustomerIdentityConfirmed: true)]);
+    await importer.ImportAsync(bridgeReview.ReviewID);
     var bridgeCustomer = await db.Customers.SingleAsync(x => x.FullName == "Synthetic Bridge Guest");
     var bridgeStays = await db.Stays.Where(x => x.CustomerID == bridgeCustomer.CustomerID).ToArrayAsync();
     foreach (var stay in bridgeStays) db.StayMemos.Add(new StayMemo { StayID = stay.StayID, MemoText = "Bridge endpoint note" });
     await db.SaveChangesAsync();
     var bridgeMiddle = await Fixture("bridge-middle", Fields("BRIDGE-2", "Synthetic Bridge Guest", arrival: "2027-01-02", departure: "2027-01-03"));
     var middleReview = await importer.PrepareAsync(bridgeMiddle, CsvFileEncoding.Auto, ',');
-    await importer.ImportAsync(middleReview.ReviewID, [new(middleReview.Rows[0].RowNumber, CustomerID: bridgeCustomer.CustomerID, CustomerIdentityConfirmed: true)]);
+    await importer.ImportAsync(middleReview.ReviewID);
     db.ChangeTracker.Clear();
     var mergedStay = await db.Stays.SingleAsync(x => x.CustomerID == bridgeCustomer.CustomerID);
     Check(mergedStay.StartDate == new DateOnly(2027, 1, 1) && mergedStay.EndDate == new DateOnly(2027, 1, 4) && await db.StayReservations.CountAsync(x => x.StayID == mergedStay.StayID) == 3 && await db.StayMemos.CountAsync(x => x.StayID == mergedStay.StayID) == 2, "confirmed bridge booking joins both stays while preserving all stay notes and original reservations");
@@ -143,6 +145,10 @@ try
     var updateFile = await Fixture("update", Fields("UPDATE-1", "Synthetic Update Guest", departure: "2026-10-22", price: 6000));
     var updateReview = await importer.PrepareAsync(updateFile, CsvFileEncoding.Auto, ',');
     Check(updateReview.ChangedRows == 1 && updateReview.Rows[0].Message.Contains("Departure") && updateReview.Rows[0].Message.Contains("5700") && updateReview.Rows[0].Message.Contains("12000"), "changed booking exposes old/new dates and room-total prices before approval");
+    var departureComparison = updateReview.Rows[0].ComparisonFields.Single(x => x.Label == "Departure");
+    var amountComparison = updateReview.Rows[0].ComparisonFields.Single(x => x.Label == "Accommodation JPY");
+    Check(updateReview.Rows[0].HasExistingReservation && departureComparison.ExistingValue == "2026-10-21" && departureComparison.IncomingValue == "2026-10-22" && departureComparison.IsDifferent && amountComparison.ExistingValue == "5,700.00" && amountComparison.IncomingValue == "12,000.00", "comparison shows exact existing and incoming dates and room totals, not a summary-only proxy");
+    Check(!updateReview.Rows[0].ComparisonFields.Single(x => x.Label == "Booking").IsDifferent && updateReview.Rows[0].ComparisonFields.Single(x => x.Label == "Night 2026-10-21 JPY").IncomingValue == "6,000.00", "comparison distinguishes unchanged identifiers and exposes added nightly prices");
     await importer.ImportAsync(updateReview.ReviewID); db.ChangeTracker.Clear();
     Check((await db.Reservations.FindAsync(updateBooking.ReservationID))!.CheckOutDate == new DateOnly(2026, 10, 22) && await db.ReservationCharges.Where(x => x.ReservationID == updateBooking.ReservationID && x.ChargeType == "Accommodation").SumAsync(x => x.Amount) == 12000m, "approved changed booking updates source-owned dates and nightly charges");
     Check(await db.ReservationPayments.AnyAsync(x => x.ReservationID == updateBooking.ReservationID && x.Amount == 300m) && await db.ReservationCharges.AnyAsync(x => x.ReservationID == updateBooking.ReservationID && x.ChargeType == "Towel") && await db.StayMemos.AnyAsync(x => x.StayID == stayID && x.MemoText == "Staff note retained"), "approved update preserves actual payments, manual extras and stay notes");
@@ -157,22 +163,25 @@ try
     var manualBooking = await db.Reservations.SingleAsync(x => x.ExternalReservationNumber == "DISTANT-1"); manualBooking.ExpectedGuestCount = 3; await db.SaveChangesAsync();
     var manualFile = await Fixture("manual-conflict", Fields("DISTANT-1", "Synthetic Shared Guest", arrival: "2026-12-01", departure: "2026-12-02", price: 6200));
     var manualReview = await importer.PrepareAsync(manualFile, CsvFileEncoding.Auto, ','); Check(manualReview.HeldRows == 1 && manualReview.Rows[0].Message.Contains("Staff changed"), "manual field edits block unsafe automatic overwrite");
+    var guestsComparison = manualReview.Rows[0].ComparisonFields.Single(x => x.Label == "Guests");
+    Check(manualReview.Rows[0].HasExistingReservation && guestsComparison.ExistingValue == "3" && guestsComparison.IncomingValue == "2" && guestsComparison.IsDifferent, "held comparison uses current staff-edited database values, not historical source values");
     var conflictFields = Fields("CONFLICT-1", "Synthetic Room Conflict"); conflictFields["部屋名称"] = "翔(Show)"; conflictFields["部屋マスタ"] = "順(Jyun)";
     var conflictFile = await Fixture("room-conflict", conflictFields); var conflict = await importer.PrepareAsync(conflictFile, CsvFileEncoding.Auto, ',');
     Check(conflict.HeldRows == 1 && conflict.Rows[0].RoomChoices.Count == 5, "conflicting external/master room names ask which physical room is correct");
     var show = await db.Rooms.SingleAsync(x => x.RoomName == "翔(Show)");
-    await importer.ImportAsync(conflict.ReviewID, [new(conflict.Rows[0].RowNumber, RoomID: show.RoomID, CustomerIdentityConfirmed: true)]);
+    await importer.ImportAsync(conflict.ReviewID, [new(conflict.Rows[0].RowNumber, RoomID: show.RoomID)]);
     Check(await db.Reservations.AnyAsync(x => x.ExternalReservationNumber == "CONFLICT-1") && await db.Rooms.CountAsync() == 5, "explicit room resolution imports without creating a physical room");
     var raceFile = await Fixture("race-update", Fields("CONFLICT-1", "Synthetic Room Conflict", price: 6000));
     var raceReview = await importer.PrepareAsync(raceFile, CsvFileEncoding.Auto, ',');
     var conflictBooking = await db.Reservations.SingleAsync(x => x.ExternalReservationNumber == "CONFLICT-1"); conflictBooking.ExpectedGuestCount = 3; await db.SaveChangesAsync();
     if (raceReview.ChangedRows > 0) await Reject(() => importer.ImportAsync(raceReview.ReviewID), "staff edit after review invalidates an approved update transaction");
     else Check(raceReview.HeldRows == 1, "previously conflicting room source requires reconciliation before automatic changes");
-    var unresolvedRow = new ImportReviewRowViewModel(new ImportReviewRow(1, "Booking.com", ImportRowDisposition.Ready, "Same name", 1, 5700m)
-        { CustomerMatches = [new(null, null, "Different person"), new(pairCustomers[0], null, "Same person")] }, () => { });
-    Check(unresolvedRow.IsUnresolved, "same-name UI question cannot silently default to either customer identity");
-    unresolvedRow.SelectedCustomer = unresolvedRow.CustomerMatches[0];
-    Check(!unresolvedRow.IsUnresolved && unresolvedRow.Decision.CustomerIdentityConfirmed, "explicit Different person choice confirms a new customer");
+    var roomDecisionChanged = false;
+    var unresolvedRow = new ImportReviewRowViewModel(new ImportReviewRow(1, "Booking.com", ImportRowDisposition.Changed, "Choose a room", 1, 5700m)
+        { RoomChoices = [new(show.RoomID, show.RoomName)] }, () => roomDecisionChanged = true);
+    Check(unresolvedRow.IsUnresolved, "changed booking with a room conflict still requires a room choice");
+    unresolvedRow.SelectedRoom = unresolvedRow.RoomChoices[0];
+    Check(!unresolvedRow.IsUnresolved && unresolvedRow.Decision.RoomID == show.RoomID && roomDecisionChanged, "room resolution clears its question and invalidates batch approval");
     var sourceParser = provider.GetRequiredService<ICsvReservationParser>();
     var noPrice = Fields("NOPRICE-1", "Synthetic No Price", status: "キャンセル"); noPrice["詳細"] = @"notes with a backslash \ but no price";
     Check(sourceParser.Parse(noPrice).Reservation?.SourcePaymentMethod is null, "a backslash without a price never invents an Internet-payment designation");
@@ -204,6 +213,37 @@ try
     await db.Database.ExecuteSqlRawAsync("CREATE TRIGGER dbo.VerifierAbort ON dbo.Reservation AFTER INSERT AS BEGIN IF EXISTS(SELECT 1 FROM inserted WHERE ExternalReservationNumber=N'FAIL-2') THROW 51002, 'Synthetic abort', 1; END");
     await Reject(() => importer.ImportAsync(failureReview.ReviewID), "SQL failure surfaces a visible import error"); await db.Database.ExecuteSqlRawAsync("DROP TRIGGER dbo.VerifierAbort");
     Check(await db.Reservations.CountAsync() == bookingsBefore && await db.ImportBatches.CountAsync() == batchesBefore, "failure rolls back earlier bookings, stay/group writes and audit batches together");
+    var japaneseFile = await Fixture("japanese-names", Fields("JP-1", "山田　太郎"), Fields("JP-2", "山田 太郎", ota: "Hostelworld"), Fields("JP-3", "山田 次郎"));
+    var japaneseReview = await importer.PrepareAsync(japaneseFile, CsvFileEncoding.Auto, ','); await importer.ImportAsync(japaneseReview.ReviewID);
+    var japaneseLinks = await (from booking in db.Reservations join link in db.ReservationCustomers on booking.ReservationID equals link.ReservationID
+        where booking.ExternalReservationNumber == "JP-1" || booking.ExternalReservationNumber == "JP-2" || booking.ExternalReservationNumber == "JP-3"
+        select new { booking.ExternalReservationNumber, link.CustomerID }).ToArrayAsync();
+    Check(japaneseLinks.Single(x => x.ExternalReservationNumber == "JP-1").CustomerID == japaneseLinks.Single(x => x.ExternalReservationNumber == "JP-2").CustomerID && japaneseLinks.Single(x => x.ExternalReservationNumber == "JP-1").CustomerID != japaneseLinks.Single(x => x.ExternalReservationNumber == "JP-3").CustomerID, "Japanese whitespace-normalized names share a customer across OTAs, but different full names stay separate");
+    var olderCustomer = new Customer { FullName = "Synthetic Duplicate Guest", Email = "staff-preserved@example.invalid" };
+    db.Customers.Add(olderCustomer); await db.SaveChangesAsync();
+    var newerCustomer = new Customer { FullName = "synthetic duplicate guest", Nickname = "Keep this separate old record" };
+    db.Customers.Add(newerCustomer); await db.SaveChangesAsync();
+    var duplicateNameFile = await Fixture("duplicate-existing-names", Fields("OLD-DUP-1", "SYNTHETIC DUPLICATE GUEST"));
+    var duplicateNameReview = await importer.PrepareAsync(duplicateNameFile, CsvFileEncoding.Auto, ','); await importer.ImportAsync(duplicateNameReview.ReviewID);
+    var chosenCustomerID = await db.ReservationCustomers.Where(x => x.ReservationID == db.Reservations.Where(r => r.ExternalReservationNumber == "OLD-DUP-1").Select(r => r.ReservationID).Single()).Select(x => x.CustomerID).SingleAsync();
+    db.ChangeTracker.Clear();
+    Check(chosenCustomerID == olderCustomer.CustomerID && (await db.Customers.FindAsync(olderCustomer.CustomerID))!.Email == "staff-preserved@example.invalid" && (await db.Customers.FindAsync(newerCustomer.CustomerID))!.Nickname == "Keep this separate old record", "historical duplicate names reuse the oldest identity without merging or overwriting either staff-owned record");
+    var cancelledFollowup = await Fixture("cancelled-followup", Fields("UPDATE-2", "Synthetic Update Guest", arrival: "2026-10-22", departure: "2026-10-23"));
+    var followupReview = await importer.PrepareAsync(cancelledFollowup, CsvFileEncoding.Auto, ','); await importer.ImportAsync(followupReview.ReviewID);
+    var followupStayID = await db.StayReservations.Where(x => x.ReservationID == db.Reservations.Where(r => r.ExternalReservationNumber == "UPDATE-2").Select(r => r.ReservationID).Single()).Select(x => x.StayID).SingleAsync();
+    Check(followupStayID != stayID, "automatic name reuse never links a new visit to the cancelled booking's retained stay");
+    var agodaCustomer = new Customer { FullName = "Synthetic Held Agoda Guest" }; db.Customers.Add(agodaCustomer); await db.SaveChangesAsync();
+    var agodaID = await db.OTAs.Where(x => x.OTAName == "Agoda").Select(x => x.OTAID).SingleAsync();
+    var confirmedID = await db.BookingStatuses.Where(x => x.StatusName == "Confirmed").Select(x => x.BookingStatusID).SingleAsync();
+    var agodaBooking = new Reservation { OTAID = agodaID, ExternalReservationNumber = "HELD-AGODA-1", BookingStatusID = confirmedID, CheckInDate = new(2026, 10, 19), CheckOutDate = new(2026, 10, 20), ExpectedGuestCount = 1 };
+    db.Reservations.Add(agodaBooking); await db.SaveChangesAsync();
+    db.ReservationCustomers.Add(new ReservationCustomer { ReservationID = agodaBooking.ReservationID, CustomerID = agodaCustomer.CustomerID, IsLeadGuest = true });
+    db.ReservationCharges.Add(new ReservationCharge { ReservationID = agodaBooking.ReservationID, ChargeType = "Accommodation", ServiceDate = new(2026, 10, 19), UnitPrice = 4000m }); await db.SaveChangesAsync();
+    var agodaFile = await Fixture("held-agoda-existing", Fields("HELD-AGODA-1", "Synthetic Held Agoda Guest", ota: "Agoda"));
+    var agodaReview = await importer.PrepareAsync(agodaFile, CsvFileEncoding.Auto, ',');
+    var agodaArrival = agodaReview.Rows[0].ComparisonFields.Single(x => x.Label == "Arrival");
+    var agodaAmount = agodaReview.Rows[0].ComparisonFields.Single(x => x.Label == "Accommodation JPY");
+    Check(agodaReview.HeldRows == 1 && agodaReview.Rows[0].HasExistingReservation && agodaArrival.ExistingValue == "2026-10-19" && agodaArrival.IncomingValue == "2026-10-20" && agodaAmount.ExistingValue == "4,000.00" && agodaAmount.IncomingValue == "Source total (unverified): 5700", "unverified OTA rows compare actual existing bookings against clearly labeled raw incoming values");
     var settings = provider.GetRequiredService<IRoomSettingsService>();
     var rowVM = new RoomPolicyRowViewModel((await settings.LoadAsync()).Rooms.Single(x => x.RoomID == show.RoomID), [new(null, "None"), new(1, "2025"), new(2, "2026")], settings, (_, _) => { });
     rowVM.SelectedPolicy = rowVM.Policies[2]; await rowVM.SaveCommand.ExecuteAsync(null);
@@ -218,13 +258,35 @@ try
     {
         try
         {
+            static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
+            {
+                for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+                {
+                    var child = VisualTreeHelper.GetChild(parent, index);
+                    yield return child;
+                    foreach (var nested in Descendants(child)) yield return nested;
+                }
+            }
             var app = new Application();
+            vm.ReviewRows.Add(new(manualReview.Rows[0], () => { }));
+            vm.ReviewRows.Add(new(conflict.Rows[0], () => { }));
             var csvView = new CsvImportView { DataContext = vm };
             var settingsVM = new SettingsViewModel(settings, NullLogger<SettingsViewModel>.Instance);
             settingsVM.LoadCommand.ExecuteAsync(null).GetAwaiter().GetResult();
             var settingsView = new SettingsView { DataContext = settingsVM };
             var window = new Window { Width = 1200, Height = 800, Content = csvView, Title = "Gajyun isolated revision verification" };
             window.Show(); window.UpdateLayout();
+            var tabs = Descendants(csvView).OfType<TabControl>().Single();
+            tabs.Items.OfType<TabItem>().Single(x => Equals(x.Header, "Questions / held")).IsSelected = true; window.UpdateLayout();
+            var bookingList = (ListBox)csvView.FindName("QuestionBookings");
+            var comparisonGrid = Descendants(csvView).OfType<DataGrid>().Single(x => ReferenceEquals(x.ItemsSource, manualReview.Rows[0].ComparisonFields));
+            var questionText = Descendants(csvView).OfType<TextBlock>().Single(x => x.Text == "Review / question");
+            Check(ReferenceEquals(bookingList.SelectedItem, vm.ReviewRows[0]) && comparisonGrid.Columns[1].Header.Equals("Existing reservation") && comparisonGrid.Columns[2].Header.Equals("Incoming CSV reservation") && comparisonGrid.TransformToAncestor(csvView).Transform(new Point()).Y < questionText.TransformToAncestor(csvView).Transform(new Point()).Y, "rendered held screen shows both reservations before the question");
+            var guestRow = (DataGridRow)comparisonGrid.ItemContainerGenerator.ContainerFromItem(guestsComparison);
+            Check(((SolidColorBrush)guestRow.Background).Color == Color.FromRgb(255, 244, 214), "rendered comparison highlights the actual changed database guest count");
+            bookingList.SelectedIndex = 1; window.UpdateLayout();
+            Check(Descendants(csvView).OfType<DataGrid>().Any(x => ReferenceEquals(x.ItemsSource, conflict.Rows[0].ComparisonFields)) && Descendants(csvView).OfType<ComboBox>().Any(x => ReferenceEquals(x.ItemsSource, conflict.Rows[0].RoomChoices)), "selecting another held booking updates both its comparison and room question");
+            Check(!Descendants(csvView).OfType<TextBlock>().Any(x => x.Text.Contains("same customer?", StringComparison.OrdinalIgnoreCase)), "rendered questions contain no obsolete customer-identity prompt");
             window.Content = settingsView; window.UpdateLayout();
             window.Close();
             foreach (var country in db.Countries.AsNoTracking().ToArray())

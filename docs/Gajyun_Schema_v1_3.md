@@ -9,7 +9,7 @@ This document describes the current application and supersedes the implementatio
 - Startup checks connectivity, applies pending EF migrations and seeds rooms, beds, booking statuses and aliases. It never calls `EnsureCreated`, deletes an existing database or recreates one automatically on failure.
 - On 2026-11-06, staff explicitly approved deleting the old guesthouse database and replacing its migration baseline. A COPY_ONLY/CHECKSUM backup was verified with RESTORE VERIFYONLY before dropping only that database.
 - Backup: `%LOCALAPPDATA%\Gajyun\Backups\GuesthouseGajyunDb_before_v13_20261106_2a982e0028cf4f4f955e3331da658fb2.bak`. This contains guest data: keep it private, outside source control, with an appropriate retention policy.
-- The rebuilt database starts with no reservations, customers or import batches. Historical reservations were not automatically reimported. Staff must choose the CSV and resolve identity/room questions in the application.
+- The rebuilt database starts with no reservations, customers or import batches. Historical reservations were not automatically reimported. Staff must choose the CSV and resolve room questions in the application; the updated name rule resolves customers automatically.
 - The superseded migrations were archived outside the compiled Data project in `session-state\files\MigrationArchive20261106`. This baseline is not an in-place upgrade for another populated v1.2 database; do not apply it there.
 
 ## Model changes
@@ -57,10 +57,10 @@ Breakfast-inclusive CSV room totals do not establish the accommodation-only taxa
 ## Friendly reviewed CSV workflow
 
 1. Choose CSV: the application reads and prepares a review automatically.
-2. Review New bookings, Changed bookings, Previously active cancellations and Questions/held records.
-3. Resolve required questions, acknowledge the batch and import. Changing the file, encoding or any decision clears approval. Advanced encoding/raw preview is collapsed by default.
+2. Review New bookings, Changed bookings, Previously active cancellations and Questions/held records. In Questions/held, select a booking to see the existing database reservation and incoming CSV values side by side, with differences highlighted, before reading the hold reason or answering the room question. A new booking explicitly shows that no existing reservation exists. Held/unverified sources retain their raw dates, room names and stated totals; unverified prices are not presented as validated charges.
+3. Resolve room questions, acknowledge the batch and import. Customer identity questions are no longer required. Changing the file, encoding or any room decision clears approval. Advanced encoding/raw preview is collapsed by default.
 
-Only the supplied combined Japanese export is mapped. Generic preview does not enable unverified OTA imports. The real 340-record sample has 257 active and 74 newly cancelled eligible bookings, with nine held records: seven Agoda rows and two inconsistent nightly schedules. Counts describe source classification before optional staff decisions; held records are audited but never silently saved as reservations.
+Only the supplied combined Japanese export is mapped.
 
 New active bookings create nightly room-total charges, unclassified OTA statements, customer links, room assignments, pending tax snapshots and an operational Stay/StayReservation. New cancelled bookings create the original reservation and its audit/customer associations, but no invented financial lines or stay. Nightly room prices are never multiplied by guest count. Deposit text remains an unclassified statement, not commission or receipt.
 
@@ -68,9 +68,11 @@ The staff-approved rule designates `Internet payment` when the details contain a
 
 Changed bookings display source differences and require batch approval. Safe source-owned updates preserve payments, manual extras, actual check-in, GroupID and staff notes. Previously-active cancellations preserve existing financial and stay history while changing booking status. Staff-edited source fields, payment designation, imported finances, classified statements, confirmed taxes and conflicting accommodation/stay changes are held for reconciliation. Concurrent changes after review reject the transaction.
 
-Repeated normalized names are suggestions, not automatic identity merges. Staff must explicitly select Same person or Different person. A confirmed shared customer with adjacent dates can join operational stays across OTAs. Nonconsecutive visits stay separate; bridge bookings preserve stay notes. Original reservation identifiers, prices, payments and import histories remain independent. Automatic adjacency excludes stays containing cancelled booking links.
+On 2026-11-07, staff replaced the confirmation rule: matching normalized full names mean the same customer. Imports automatically reuse an existing customer or one created earlier in the batch, across all OTAs, without prompting. Matching uses Unicode Form KC, collapsed Unicode whitespace and invariant uppercase; it is not fuzzy or partial-name matching. Original customer text, contact details and staff data are preserved. If historical duplicate customer records already exist, new bookings use the lowest matching CustomerID; existing records and reservation links are not retroactively merged. Correcting different people with identical names is deferred to a future interface.
 
-Booking.com and Hostelworld bookings can share an OTA-scoped group when they have the same prefix before the final hyphen and a numeric-text suffix. Identifiers are never parsed as integers. Agoda grouping remains manual/future work. Existing staff GroupID assignments are preserved.
+The shared customer and adjacent dates can join operational stays across OTAs. Nonconsecutive visits stay separate; bridge bookings preserve stay notes. Original reservation identifiers, prices, payments and import histories remain independent. Automatic adjacency excludes stays containing cancelled booking links. A genuinely different guest name on an existing booking still requires reconciliation rather than replacing its customer association.
+
+Booking.com and Hostelworld bookings can share an OTA-scoped group when they have the same prefix before the final hyphen and a numeric-text suffix.
 
 Approved imports learn OTA-specific normalized room-name aliases. Conflicting external/master names require selection of one of the five physical rooms. Contradictory choices for one OTA/name reject the batch. No physical rooms or automatic individual bed assignments are created.
 
@@ -78,6 +80,6 @@ All persistence uses a serialized transaction and preserves complete source byte
 
 ## Verification scope
 
-All 59 revised-schema/import/UI checks passed on 2026-11-06. Validation uses temporary, uniquely named SQL Server LocalDB databases, never production guest reservations. It covers the real sample, repeated imports, approvals, identity permissions, stays/groups, rollback, staff-data protection, damaged audit handling, room conflicts, lookup seeds, local asset URLs, WPF rendering and migration rollback/recreation. Temporary verification databases are removed afterward. Local database creation and seeding also succeeded through the application initialization service after the authorized reset.
+All 69 revised-schema/import/UI checks passed on 2026-11-07, including the automatic-name rule, exact existing/incoming comparison values, highlighted changes and comparison-before-question rendering. Validation uses temporary, uniquely named SQL Server LocalDB databases, never production guest reservations. It also covers the real sample, repeated imports, approvals, stays/groups, rollback, staff-data protection, damaged audit handling, room conflicts, lookup seeds, local asset URLs and migration rollback/recreation. Temporary verification databases are removed afterward. Local database creation and seeding succeeded through the application initialization service after the authorized 2026-11-06 reset. The 2026-11-07 changes require no schema migration, reset or retroactive customer merge.
 
 A persistent xUnit project remains blocked by unavailable native Visual Studio project-inventory tooling; the session verification executable is not presented as an xUnit suite. The final completion report records the actual executed check count and build result.

@@ -32,9 +32,9 @@ public partial class CsvImportViewModel(ICsvPreviewService previewService, IFile
     public IEnumerable<ImportReviewRowViewModel> NewBookings => ReviewRows.Where(x => x.Row.Disposition is ImportRowDisposition.Ready or ImportRowDisposition.Cancelled);
     public IEnumerable<ImportReviewRowViewModel> ChangedBookings => ReviewRows.Where(x => x.Row.Disposition == ImportRowDisposition.Changed);
     public IEnumerable<ImportReviewRowViewModel> CancelledBookings => ReviewRows.Where(x => x.Row.Disposition == ImportRowDisposition.CancellationUpdate);
-    public IEnumerable<ImportReviewRowViewModel> Questions => ReviewRows.Where(x => x.HasCustomerQuestion || x.HasRoomQuestion || x.Row.Disposition is ImportRowDisposition.Held or ImportRowDisposition.Invalid);
+    public IEnumerable<ImportReviewRowViewModel> Questions => ReviewRows.Where(x => x.HasRoomQuestion || x.Row.Disposition is ImportRowDisposition.Held or ImportRowDisposition.Invalid);
     private ReservationImportReview? review;
-    public string ImportExplanation => "Agoda and conflicting prices remain held. Deposits are not cash receipts. Breakfast-inclusive prices leave tax pending. Staff-managed fields are preserved.";
+    public string ImportExplanation => "Matching normalized guest names reuse the same customer automatically. Agoda and conflicting prices remain held. Deposits are not cash receipts. Breakfast-inclusive prices leave tax pending. Staff-managed fields are preserved.";
     public bool CanImport => !IsLoading && ReviewAcknowledged && review is not null && !ReviewRows.Any(x => x.IsUnresolved) &&
         (review.ReadyRows + review.CancelledRows + review.DuplicateRows + review.ChangedRows + review.CancellationUpdates > 0 || ReviewRows.Any(x => x.SelectedRoom is not null));
 
